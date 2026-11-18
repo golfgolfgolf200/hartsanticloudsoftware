@@ -1,0 +1,103 @@
+# ============================================================================
+# Hart's Anti-Cloud — Comprehensive .gitignore
+# ============================================================================
+
+# --- Rust / Cargo / Tauri Build Artifacts ---
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+*.dSYM/
+*.profraw
+*.profdata
+
+# --- Release Bundles, Installers & Binary Archives ---
+/dist-release/
+*.tar.zst
+*.tar.xz
+*.tar.gz
+*.tgz
+*.zip
+*.deb
+*.rpm
+*.AppImage
+*.dmg
+*.msi
+*.exe
+SHA256SUMS
+
+# --- Frontend / Node / Svelte 5 / Vite ---
+node_modules/
+**/node_modules/
+/control-plane/dist/
+/control-plane/.svelte-kit/
+/control-plane/build/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.eslintcache
+.tsbuildinfo
+
+# --- AI Models, GGML/GGUF Weights & Vector Indexes ---
+/models/
+**/models/
+*.gguf
+*.ggml
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.part
+
+# --- Runtime State, SQLite WAL, Sockets & Auth Tokens (CRITICAL) ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sock
+*.token
+*.pid
+/run/
+/sqlite/
+/var/
+/tmp/
+
+# --- Firecracker KVM & Wasmtime Sandbox Artifacts ---
+*.ext4
+*.img
+*.qcow2
+*.iso
+vmlinux*
+*.wasm
+!assets/**/*.wasm
+
+# --- Secrets, Keys, Certificates & Environment Overrides ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*secret*
+*credentials*
+override.conf
+
+# --- OS & Editor Metadata ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+*~
+*.swp
+*.swo
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.iml

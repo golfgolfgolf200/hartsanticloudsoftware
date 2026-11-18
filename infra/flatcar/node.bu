@@ -1,0 +1,220 @@
+variant: flatcar
+version: 1.1.0
+passwd:
+  users:
+    - name: core
+      ssh_authorized_keys: []
+      groups:
+        - sudo
+    - name: hartsanticloud
+      uid: 990
+      system: true
+      no_create_home: true
+      shell: /sbin/nologin
+      groups:
+        - kvm
+  groups:
+    - name: hartsanticloud
+      gid: 990
+      system: true
+systemd:
+  units:
+    - name: sshd.service
+      mask: true
+    - name: sshd.socket
+      mask: true
+    - name: locksmithd.service
+      enabled: true
+    - name: hartsanticloud-init-secrets.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Generate Node-Unique Cryptographic Secrets on First Boot
+        Before=garage.service hartsanticloud-supervisor.service
+        ConditionPathExists=!/etc/hartsanticloud/garage.toml
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/bin/bash -c 'umask 0077 && SECRET=$(od -vN 32 -An -tx1 /dev/urandom | tr -d " \n") && sed "s/__GENERATED_RPC_SECRET__/$SECRET/" /etc/hartsanticloud/garage.toml.template > /etc/hartsanticloud/garage.toml && chown hartsanticloud:hartsanticloud /etc/hartsanticloud/garage.toml && chmod 0600 /etc/hartsanticloud/garage.toml'
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: netbird.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=NetBird Zero-Trust WireGuard Mesh Agent
+        After=network-online.target
+        Wants=network-online.target
+
+        [Service]
+        Type=simple
+        ExecStart=/opt/hartsanticloud/bin/netbird service run --config /etc/netbird/config.json
+        Restart=always
+        RestartSec=5
+        LimitNOFILE=65536
+        ProtectSystem=strict
+        ProtectHome=yes
+        NoNewPrivileges=yes
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: garage.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Garage Lightweight S3 Object Store
+        After=network-online.target hartsanticloud-init-secrets.service
+        Wants=network-online.target
+        Requires=hartsanticloud-init-secrets.service
+
+        [Service]
+        Type=simple
+        User=hartsanticloud
+        Group=hartsanticloud
+        ExecStart=/opt/hartsanticloud/bin/garage -c /etc/hartsanticloud/garage.toml server
+        Restart=always
+        RestartSec=3
+        LimitNOFILE=65536
+        NoNewPrivileges=yes
+        ProtectSystem=strict
+        ProtectHome=yes
+        PrivateTmp=yes
+        ReadWritePaths=/var/lib/hartsanticloud/garage
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: hartsanticloud-supervisor.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Hart's Anti-Cloud Hardened Supervisor (SQLite WAL, BitNet, Firecracker)
+        After=network-online.target netbird.service garage.service
+        Wants=network-online.target
+
+        [Service]
+        Type=simple
+        User=hartsanticloud
+        Group=hartsanticloud
+        UMask=0077
+        Environment=RUST_LOG=info,hartsanticloud_supervisor=info
+        Environment=HARTSANTICLOUD_DATA_DIR=/var/lib/hartsanticloud
+        Environment=HARTSANTICLOUD_BIND_ADDR=127.0.0.1:8420
+        Environment=HARTSANTICLOUD_ENFORCE_MIN_HW=true
+        ExecStart=/opt/hartsanticloud/bin/hartsanticloud-supervisor
+        Restart=always
+        RestartSec=2
+        LimitNOFILE=131072
+        LimitMEMLOCK=infinity
+        NoNewPrivileges=yes
+        ProtectSystem=strict
+        ProtectHome=yes
+        PrivateTmp=yes
+        ProtectKernelTunables=yes
+        ProtectKernelModules=yes
+        ProtectControlGroups=yes
+        RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+        CapabilityBoundingSet=
+        AmbientCapabilities=
+        SystemCallArchitectures=native
+        ReadOnlyPaths=/opt/hartsanticloud
+        ReadWritePaths=/var/lib/hartsanticloud
+
+        [Install]
+        WantedBy=multi-user.target
+storage:
+  directories:
+    - path: /opt/hartsanticloud/bin
+      mode: 0755
+    - path: /opt/hartsanticloud/models
+      mode: 0755
+    - path: /etc/hartsanticloud
+      mode: 0750
+      user:
+        id: 990
+      group:
+        id: 990
+    - path: /var/lib/hartsanticloud
+      mode: 0750
+      user:
+        id: 990
+      group:
+        id: 990
+    - path: /var/lib/hartsanticloud/run
+      mode: 0700
+      user:
+        id: 990
+      group:
+        id: 990
+    - path: /var/lib/hartsanticloud/sqlite
+      mode: 0750
+      user:
+        id: 990
+      group:
+        id: 990
+    - path: /var/lib/hartsanticloud/firecracker
+      mode: 0750
+      user:
+        id: 990
+      group:
+        id: 990
+    - path: /var/lib/hartsanticloud/garage/meta
+      mode: 0750
+      user:
+        id: 990
+      group:
+        id: 990
+    - path: /var/lib/hartsanticloud/garage/data
+      mode: 0750
+      user:
+        id: 990
+      group:
+        id: 990
+  files:
+    - path: /etc/flatcar/update.conf
+      overwrite: true
+      mode: 0644
+      contents:
+        inline: |
+          REBOOT_STRATEGY=etcd-lock
+          LOCKSMITHD_REBOOT_WINDOW_START=02:00
+          LOCKSMITHD_REBOOT_WINDOW_LENGTH=2h
+    - path: /etc/sysctl.d/90-hartsanticloud-hardening.conf
+      mode: 0644
+      contents:
+        inline: |
+          net.ipv4.ip_forward = 1
+          net.ipv6.conf.all.forwarding = 1
+          net.ipv4.conf.all.rp_filter = 1
+          net.ipv4.conf.default.rp_filter = 1
+          net.ipv4.tcp_syncookies = 1
+          net.ipv4.conf.all.accept_redirects = 0
+          net.ipv6.conf.all.accept_redirects = 0
+          net.ipv4.conf.all.send_redirects = 0
+          kernel.kptr_restrict = 2
+          kernel.dmesg_restrict = 1
+          kernel.unprivileged_bpf_disabled = 1
+          kernel.yama.ptrace_scope = 2
+          vm.swappiness = 10
+          vm.max_map_count = 262144
+    - path: /etc/hartsanticloud/garage.toml.template
+      mode: 0640
+      user:
+        id: 990
+      group:
+        id: 990
+      contents:
+        inline: |
+          metadata_dir = "/var/lib/hartsanticloud/garage/meta"
+          data_dir = "/var/lib/hartsanticloud/garage/data"
+          db_engine = "sqlite"
+          replication_factor = 1
+          rpc_bind_addr = "127.0.0.1:3901"
+          rpc_public_addr = "127.0.0.1:3901"
+          rpc_secret = "__GENERATED_RPC_SECRET__"
+
+          [s3_api]
+          s3_region = "local-edge-1"
+          api_bind_addr = "127.0.0.1:3900"
+          root_domain = ".s3.hartsanticloud.local"
