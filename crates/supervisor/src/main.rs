@@ -884,8 +884,12 @@ fn validate_readonly_sql(sql: &str) -> Result<String, &'static str> {
         "LOAD_EXTENSION",
     ];
 
+    let tokens: Vec<&str> = upper
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect();
     for forbidden in FORBIDDEN_TOKENS {
-        if upper.contains(forbidden) {
+        if tokens.contains(forbidden) {
             return Err("Query contains restricted SQLite keyword");
         }
     }
