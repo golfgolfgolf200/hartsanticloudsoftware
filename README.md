@@ -29,6 +29,14 @@ internal prompts, and application state through external cloud APIs.
 
 ---
 
+## What's New in v0.2.0
+
+- **PDF & Offline OCR Vault Ingestion (`doc_ingest.rs`):** Extracts native text-layer PDFs directly in pure Rust (`pdf-extract`) with automatic offline `pdftoppm` + `tesseract` OCR fallback for scanned PDFs and standalone images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.tif`, `.tiff`, `.bmp`) into the `sqlite-vec` RAG index.
+- **Multi-Modal Vision Support (`--mmproj`):** Automatically detects and verifies `*mmproj*.gguf` vision projectors in `/opt/hartsanticloud/models` (or `HARTSANTICLOUD_MMPROJ_FILENAME`), passes `--mmproj` to `llama-server`, and accepts OpenAI-compatible `image_url` content arrays in `/v1/chat/completions`.
+- **Hardened Firecracker KVM Jailer (`sandbox.rs`):** Launches Firecracker microVMs through `jailer` with unprivileged `uid`/`gid` (`65534`), isolated chroot jails, `--new-pid-ns`, cgroup v2 `memory.max` enforcement, and `--seccomp-level 2` syscall filtering, falling back cleanly to direct VMM or Wasmtime WASI when unprivileged.
+
+---
+
 ## System Footprint & Resource Efficiency
 
 Hart's Anti-Cloud is engineered to run comfortably on standard entry-level

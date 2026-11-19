@@ -25,7 +25,7 @@ done
 
 echo "[3/4] Building Tauri v2 + Svelte 5 desktop packages..."
 cd "$ROOT_DIR/control-plane"
-npm install --silent
+npm ci --silent
 npm run tauri build
 find "$ROOT_DIR/target/release/bundle" -type f \( -name "*.deb" -o -name "*.AppImage" \) -exec cp {} "$DIST_DIR/" \;
 
@@ -41,7 +41,7 @@ sudo mkdir -p /opt/hartsanticloud/bin /opt/hartsanticloud/models \
   /var/lib/hartsanticloud/sqlite /var/lib/hartsanticloud/run \
   /var/lib/hartsanticloud/firecracker /var/lib/hartsanticloud/wasm
 
-for bin in hartsanticloud-supervisor llama-server wasmtime firecracker; do
+for bin in hartsanticloud-supervisor llama-server whisper-cli wasmtime firecracker jailer; do
   if [[ -x "$SCRIPT_DIR/bin/$bin" ]]; then
     sudo install -m 0755 "$SCRIPT_DIR/bin/$bin" "/opt/hartsanticloud/bin/$bin"
   fi
@@ -108,7 +108,7 @@ sha256sum bin/* *.deb *.AppImage install.sh 2>/dev/null > SHA256SUMS || true
 
 # Create single compressed archive for one-file customer download
 cd "$ROOT_DIR"
-tar -cf - -C "$ROOT_DIR" dist-release | zstd -19 -T0 -o "$ROOT_DIR/hartsanticloud-v0.1.0-linux-x86_64.tar.zst" 2>/dev/null || \
-  tar -cJf "$ROOT_DIR/hartsanticloud-v0.1.0-linux-x86_64.tar.xz" -C "$ROOT_DIR" dist-release
+tar -cf - -C "$ROOT_DIR" dist-release | zstd -19 -T0 -o "$ROOT_DIR/hartsanticloud-v${VERSION:-0.2.0}-linux-x86_64.tar.zst" 2>/dev/null || \
+  tar -cJf "$ROOT_DIR/hartsanticloud-v${VERSION:-0.2.0}-linux-x86_64.tar.xz" -C "$ROOT_DIR" dist-release
 
-ls -lh "$DIST_DIR" "$ROOT_DIR"/hartsanticloud-v0.1.0-linux-x86_64.tar.*
+ls -lh "$DIST_DIR" "$ROOT_DIR"/hartsanticloud-v${VERSION:-0.2.0}-linux-x86_64.tar.*

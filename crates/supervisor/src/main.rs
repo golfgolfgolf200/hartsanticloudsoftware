@@ -78,10 +78,39 @@ struct AppState {
     sandbox: Arc<SandboxManager>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
     role: String,
-    content: String,
+    content: serde_json::Value,
+}
+
+impl ChatMessage {
+    fn text_content(&self) -> String {
+        if let Some(s) = self.content.as_str() {
+            return s.to_string();
+        }
+        if let Some(arr) = self.content.as_array() {
+            let mut out = Vec::new();
+            for item in arr {
+                if item.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    if let Some(t) = item.get("text").and_then(|v| v.as_str()) {
+                        out.push(t.to_string());
+                    }
+                }
+            }
+            return out.join("
+");
+        }
+        String::new()
+    }
+
+    fn char_len(&self) -> usize {
+        if let Some(s) = self.content.as_str() {
+            s.len()
+        } else {
+            self.content.to_string().len()
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -450,9 +479,34 @@ async fn try_start_inference_worker(state: &Arc<AppState>) {
         }
     };
 
-    match Command::new(&binary)
-        .arg("-m")
-        .arg(&model_path)
+    let mmproj_path: Option<PathBuf> = std::env::var("HARTSANTICLOUD_MMPROJ_FILENAME")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|f| state.models_dir.join(f))
+        .or_else(|| {
+            fs::read_dir(&state.models_dir).ok().and_then(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .find(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.to_ascii_lowercase().contains("mmproj") && n.ends_with(".gguf"))
+                            .unwrap_or(false)
+                    })
+            })
+        })
+        .and_then(|raw_mm| verify_artifact_permissions(&raw_mm, &state.models_dir).ok());
+
+    let mut cmd = Command::new(&binary);
+    cmd.arg("-m").arg(&model_path);
+    if let Some(ref mm) = mmproj_path {
+        info!("Enabling multi-modal vision projector: {}", mm.display());
+        cmd.arg("--mmproj").arg(mm);
+    }
+
+    match cmd
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
@@ -718,7 +772,7 @@ async fn chat_completions_handler(
 
     if payload.use_vault_rag {
         if let Some(last_user) = payload.messages.iter().rev().find(|m| m.role == "user") {
-            if let Ok(hits) = search_vault_chunks(&state, &last_user.content, 3).await {
+            if let Ok(hits) = search_vault_chunks(&state, &last_user.text_content(), 3).await {
                 if !hits.is_empty() {
                     let mut context_block = String::from(
                         "Answer using the following verified local vault excerpts when relevant. Cite the source filename.\n\n",
@@ -735,7 +789,7 @@ async fn chat_completions_handler(
                         0,
                         ChatMessage {
                             role: "system".to_string(),
-                            content: context_block,
+                            content: serde_json::Value::String(context_block),
                         },
                     );
                 }
@@ -744,7 +798,7 @@ async fn chat_completions_handler(
     }
 
     let start = Instant::now();
-    let prompt_chars: usize = payload.messages.iter().map(|m| m.content.len()).sum();
+    let prompt_chars: usize = payload.messages.iter().map(|m| m.char_len()).sum();
     let needs_burst = payload.allow_cloud_burst
         && prompt_chars > (state.initial_budget.ai_context_tokens as usize * 3);
 

@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SandboxExecRequest {
-    pub runtime: String, // "firecracker" or "wasmtime"
+    pub runtime: String,
     pub workload_name: String,
     #[serde(default)]
     pub payload: String,
@@ -125,7 +125,6 @@ impl SandboxManager {
             bail!("Unsupported sandbox runtime '{}': expected 'firecracker' or 'wasmtime'", runtime);
         }
 
-        // Atomic concurrency slot reservation
         let prev = self.active_vms.fetch_add(1, Ordering::SeqCst);
         if prev >= self.max_vms {
             self.active_vms.fetch_sub(1, Ordering::SeqCst);
@@ -195,6 +194,7 @@ impl SandboxManager {
         }
 
         let fc_bin = self.bin_dir.join("firecracker");
+        let jailer_bin = self.bin_dir.join("jailer");
         let fc_assets = self.data_dir.join("firecracker");
         let kernel_path = fc_assets.join("vmlinux.bin");
         let rootfs_path = fc_assets.join("rootfs.ext4");
@@ -214,22 +214,83 @@ impl SandboxManager {
         perms.set_mode(0o700);
         fs::set_permissions(&job_dir, perms)?;
 
-        let api_sock = job_dir.join("firecracker.sock");
-        let ephem_rootfs = job_dir.join("rootfs.ext4");
-        fs::copy(&rootfs_path, &ephem_rootfs)?;
+        let is_root = fs::metadata("/proc/self")
+            .map(|m| std::os::unix::fs::MetadataExt::uid(&m) == 0)
+            .unwrap_or(false);
+        let use_jailer = jailer_bin.exists() && is_root;
 
-        let mut child = Command::new(&fc_bin)
-            .arg("--api-sock")
-            .arg(&api_sock)
-            .arg("--id")
-            .arg(job_id)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .context("Failed to spawn Firecracker VMM process")?;
+        let (child, api_sock, guest_kernel, guest_rootfs, cleanup_root) = if use_jailer {
+            let chroot_base = fc_assets.join("jail");
+            let vm_root = chroot_base.join("firecracker").join(job_id).join("root");
+            let run_dir = vm_root.join("run");
+            fs::create_dir_all(&run_dir)?;
 
-        for _ in 0..40 {
+            let jailed_kernel = vm_root.join("vmlinux.bin");
+            let jailed_rootfs = vm_root.join("rootfs.ext4");
+            if fs::hard_link(&kernel_path, &jailed_kernel).is_err() {
+                fs::copy(&kernel_path, &jailed_kernel)?;
+            }
+            fs::copy(&rootfs_path, &jailed_rootfs)?;
+
+            let mem_bytes = (self.mem_mib_per_vm as u64 + 64) * 1024 * 1024;
+            let mut cmd = Command::new(&jailer_bin);
+            cmd.arg("--id")
+                .arg(job_id)
+                .arg("--exec-file")
+                .arg(&fc_bin)
+                .arg("--uid")
+                .arg("65534")
+                .arg("--gid")
+                .arg("65534")
+                .arg("--chroot-base-dir")
+                .arg(&chroot_base)
+                .arg("--new-pid-ns")
+                .arg("--cgroup-version")
+                .arg("2")
+                .arg("--cgroup")
+                .arg(format!("memory.max={}", mem_bytes))
+                .arg("--")
+                .arg("--api-sock")
+                .arg("/run/firecracker.sock")
+                .arg("--seccomp-level")
+                .arg("2")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+
+            let child = cmd
+                .spawn()
+                .context("Failed to spawn Firecracker Jailer process")?;
+            let host_sock = run_dir.join("firecracker.sock");
+            let jail_job_dir = chroot_base.join("firecracker").join(job_id);
+            (
+                child,
+                host_sock,
+                PathBuf::from("/vmlinux.bin"),
+                PathBuf::from("/rootfs.ext4"),
+                jail_job_dir,
+            )
+        } else {
+            let api_sock = job_dir.join("firecracker.sock");
+            let ephem_rootfs = job_dir.join("rootfs.ext4");
+            fs::copy(&rootfs_path, &ephem_rootfs)?;
+
+            let child = Command::new(&fc_bin)
+                .arg("--api-sock")
+                .arg(&api_sock)
+                .arg("--id")
+                .arg(job_id)
+                .arg("--seccomp-level")
+                .arg("2")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .context("Failed to spawn Firecracker VMM process")?;
+            (child, api_sock, kernel_path, ephem_rootfs, job_dir.clone())
+        };
+
+        for _ in 0..50 {
             if api_sock.exists() {
                 break;
             }
@@ -245,15 +306,15 @@ impl SandboxManager {
         Self::send_firecracker_api(&api_sock, "PUT", "/machine-config", &machine_cfg).await?;
 
         let boot_src = serde_json::json!({
-            "kernel_image_path": kernel_path,
-            "boot_args": format!("console=ttyS0 reboot=k panic=1 pci=off harts_job={} harts_workload={}", job_id, workload_name)
+            "kernel_image_path": guest_kernel,
+            "boot_args": format!("console=ttyS0 reboot=k panic=1 pci=off net.ifnames=0 harts_job={} harts_workload={}", job_id, workload_name)
         })
         .to_string();
         Self::send_firecracker_api(&api_sock, "PUT", "/boot-source", &boot_src).await?;
 
         let drive_cfg = serde_json::json!({
             "drive_id": "rootfs",
-            "path_on_host": ephem_rootfs,
+            "path_on_host": guest_rootfs,
             "is_root_device": true,
             "is_read_only": false
         })
@@ -264,11 +325,12 @@ impl SandboxManager {
         Self::send_firecracker_api(&api_sock, "PUT", "/actions", &start_action).await?;
 
         info!(
-            "Booted Firecracker microVM {} ({} vCPU, {} MiB RAM)",
-            job_id, self.vcpu_per_vm, self.mem_mib_per_vm
+            "Booted Firecracker microVM {} (jailer={}, {} vCPU, {} MiB RAM, seccomp=2)",
+            job_id, use_jailer, self.vcpu_per_vm, self.mem_mib_per_vm
         );
 
         let wait_res = tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await;
+        let _ = fs::remove_dir_all(&cleanup_root);
         let _ = fs::remove_dir_all(&job_dir);
 
         match wait_res {

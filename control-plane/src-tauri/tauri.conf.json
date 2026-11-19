@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Hart's AntiCloud Control Plane",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.hartsanticloudsoftware.controlplane",
   "build": {
     "beforeDevCommand": "npm run dev",

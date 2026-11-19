@@ -1523,7 +1523,7 @@ dependencies = [
 
 [[package]]
 name = "hartsanticloud-control-plane"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hartsanticloud-hw-scaler",
  "reqwest 0.12.28",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "hartsanticloud-hw-scaler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "hartsanticloud-supervisor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
