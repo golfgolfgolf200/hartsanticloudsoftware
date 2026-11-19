@@ -36,4 +36,8 @@ export interface NodeDashboardSnapshot {
   active_firecracker_vms: number;
   kvm_assets_ready?: boolean;
   netbird_interface_up: boolean;
+  vision_mmproj_active: boolean;
+  mmproj_filename?: string | null;
+  firecracker_jailer_ready: boolean;
+  ocr_engine_ready: boolean;
 }

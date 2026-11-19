@@ -23,6 +23,7 @@
   let vaultSearchQuery = $state('');
   let vaultOutput = $state('');
   let busyVault = $state(false);
+  let pickingVaultFile = $state(false);
   let audioFilePath = $state('');
   let audioIngestVault = $state(true);
   let audioOutput = $state('');
@@ -112,11 +113,27 @@
     }
   }
 
+  async function handleBrowseVaultFile() {
+    if (busyVault || pickingVaultFile) return;
+    pickingVaultFile = true;
+    try {
+      const selected = await invoke<string | null>('pick_vault_file');
+      if (selected) {
+        vaultFilePath = selected;
+        await handleVaultIngest();
+      }
+    } catch (err) {
+      vaultOutput = `File Picker Error: ${String(err)}`;
+    } finally {
+      pickingVaultFile = false;
+    }
+  }
+
   async function handleVaultIngest() {
     if (busyVault) return;
     if (!vaultFilePath.trim() && !vaultNoteBody.trim()) return;
     busyVault = true;
-    vaultOutput = 'Extracting & embedding into sqlite-vec...';
+    vaultOutput = 'Extracting text / running offline OCR & embedding into sqlite-vec...';
     try {
       const res = await invoke<unknown>('ingest_vault_item', {
         filePath: vaultFilePath.trim() || null,
@@ -175,17 +192,29 @@
 </script>
 
 <main style="max-width:1180px;margin:0 auto;padding:24px;">
-  <header style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #21262d;padding-bottom:16px;margin-bottom:24px;">
+  <header style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;border-bottom:1px solid #21262d;padding-bottom:16px;margin-bottom:24px;">
     <div>
       <h1 style="margin:0;font-size:1.4rem;letter-spacing:-0.02em;">hartsanticloudsoftware.com — Edge Node Control Plane</h1>
-      <p style="margin:4px 0 0;color:#8b949e;font-size:0.88rem;">Zero-SSH Flatcar Host · Wasmtime + Firecracker KVM · Liquid AI LFM2.5 CPU Inference</p>
+      <p style="margin:4px 0 0;color:#8b949e;font-size:0.88rem;">Zero-SSH Flatcar Host · Firecracker Jailer + Wasmtime · Liquid AI LFM2.5 CPU & Vision Inference</p>
     </div>
     {#if snapshot}
-      <div style="display:flex;gap:10px;align-items:center;">
-        <span style="padding:4px 10px;border-radius:999px;font-size:0.8rem;background:#161b22;border:1px solid #30363d;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="padding:4px 10px;border-radius:999px;font-size:0.78rem;background:#161b22;border:1px solid #30363d;">
           Tier: <strong>{snapshot.local_budget.tier}</strong>
         </span>
-        <span style="padding:4px 10px;border-radius:999px;font-size:0.8rem;background:{snapshot.supervisor_online ? '#12261e' : '#2d1619'};color:{snapshot.supervisor_online ? '#3fb950' : '#f85149'};border:1px solid currentColor;">
+        <span
+          title={snapshot.mmproj_filename ? `Active projector: ${snapshot.mmproj_filename}` : 'Drop an *mmproj*.gguf projector into /opt/hartsanticloud/models to enable multimodal vision'}
+          style="padding:4px 10px;border-radius:999px;font-size:0.78rem;background:{snapshot.vision_mmproj_active ? '#12261e' : '#161b22'};color:{snapshot.vision_mmproj_active ? '#3fb950' : '#8b949e'};border:1px solid {snapshot.vision_mmproj_active ? '#238636' : '#30363d'};"
+        >
+          Vision (--mmproj): <strong>{snapshot.vision_mmproj_active ? 'Active' : 'Standby'}</strong>
+        </span>
+        <span
+          title={snapshot.firecracker_jailer_ready ? 'Firecracker KVM Jailer chroot + seccomp-level 2 isolation active' : 'Using direct VMM or Wasmtime WASI sandbox fallback'}
+          style="padding:4px 10px;border-radius:999px;font-size:0.78rem;background:{snapshot.firecracker_jailer_ready ? '#13233a' : '#161b22'};color:{snapshot.firecracker_jailer_ready ? '#58a6ff' : '#8b949e'};border:1px solid {snapshot.firecracker_jailer_ready ? '#1f6feb' : '#30363d'};"
+        >
+          Jailer: <strong>{snapshot.firecracker_jailer_ready ? 'Seccomp + Chroot' : 'WASI / Direct VMM'}</strong>
+        </span>
+        <span style="padding:4px 10px;border-radius:999px;font-size:0.78rem;background:{snapshot.supervisor_online ? '#12261e' : '#2d1619'};color:{snapshot.supervisor_online ? '#3fb950' : '#f85149'};border:1px solid currentColor;">
           {snapshot.supervisor_online ? 'Supervisor Authenticated' : 'Supervisor Offline (Local Probe)'}
         </span>
       </div>
@@ -231,9 +260,9 @@
         <div><strong>AI Backend:</strong> {snapshot.local_budget.ai_engine_backend} ({snapshot.local_budget.ai_threads} threads)</div>
         <div><strong>Active Model:</strong> {snapshot.local_budget.ai_model_filename}</div>
         <div><strong>Context Window:</strong> {snapshot.local_budget.ai_context_tokens} tokens</div>
-        <div><strong>Firecracker KVM:</strong> {snapshot.live_telemetry.kvm_available ? 'Hardware Enabled' : 'No /dev/kvm'} (Active: {snapshot.active_firecracker_vms} / {snapshot.local_budget.max_firecracker_microvms} VMs)</div>
-        <div><strong>SQLite WAL Cache:</strong> {Math.abs(snapshot.local_budget.sqlite_cache_size_kb) / 1024} MB (mmap {Math.round(snapshot.local_budget.sqlite_mmap_size_bytes / (1024 * 1024))} MB)</div>
-        <div><strong>NetBird WireGuard Mesh:</strong> {snapshot.netbird_interface_up ? 'wt0 Active' : 'Standby'}</div>
+        <div><strong>Vision Projector (--mmproj):</strong> {snapshot.vision_mmproj_active ? (snapshot.mmproj_filename ?? 'Loaded') : 'Not Loaded (Text-Only)'}</div>
+        <div><strong>Firecracker Jailer:</strong> {snapshot.firecracker_jailer_ready ? 'Chroot + Seccomp-2 Ready' : (snapshot.live_telemetry.kvm_available ? 'KVM Direct / WASI' : 'Wasmtime WASI')} ({snapshot.active_firecracker_vms}/{snapshot.local_budget.max_firecracker_microvms} VMs)</div>
+        <div><strong>Offline OCR (Tesseract):</strong> {snapshot.ocr_engine_ready ? 'pdftoppm + tesseract Ready' : 'Native PDF/Office Text'} · <strong>NetBird:</strong> {snapshot.netbird_interface_up ? 'wt0 Active' : 'Standby'}</div>
       </div>
     </section>
 
@@ -286,8 +315,13 @@
     </section>
 
     <section style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;margin-top:16px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px;">
-        <h2 style="margin:0;font-size:1rem;">Disposable Agent Sandbox Runner (Firecracker KVM / Wasmtime)</h2>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:12px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <h2 style="margin:0;font-size:1rem;">Disposable Agent Sandbox Runner (Firecracker KVM / Wasmtime)</h2>
+          <span style="font-size:0.75rem;padding:2px 8px;border-radius:999px;background:{snapshot.firecracker_jailer_ready ? '#13233a' : '#21262d'};color:{snapshot.firecracker_jailer_ready ? '#58a6ff' : '#8b949e'};border:1px solid {snapshot.firecracker_jailer_ready ? '#1f6feb' : '#30363d'};">
+            {snapshot.firecracker_jailer_ready ? 'Jailer Chroot + Seccomp-2 Active' : 'Direct / WASI Isolation'}
+          </span>
+        </div>
         {#if sandboxRuntime === 'firecracker'}
           {#if snapshot?.kvm_assets_ready}
             <span style="font-size:0.78rem;color:#3fb950;border:1px solid #238636;padding:4px 10px;border-radius:6px;font-weight:600;">
@@ -319,11 +353,25 @@
         <pre style="margin-top:12px;background:#0d1117;border:1px solid #30363d;padding:10px;border-radius:6px;max-height:160px;overflow:auto;font-size:0.8rem;">{sandboxResult}</pre>
       {/if}
     </section>
+
     <section style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
       <div style="background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;">
-        <h2 style="margin:0 0 10px;font-size:1rem;">Local Knowledge Vault (sqlite-vec + Pure-Rust Docs)</h2>
-        <div style="display:grid;grid-template-columns:1fr auto;gap:8px;margin-bottom:8px;">
-          <input bind:value={vaultFilePath} placeholder="Local file path (.pdf, .docx, .xlsx, .csv, .md)" style="background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:8px;font-size:0.82rem;" />
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;">
+          <h2 style="margin:0;font-size:1rem;">Local Knowledge Vault (sqlite-vec + PDF/OCR)</h2>
+          <span style="font-size:0.74rem;color:{snapshot.ocr_engine_ready ? '#3fb950' : '#8b949e'};">
+            {snapshot.ocr_engine_ready ? 'OCR Enabled' : 'PDF/Office Text'}
+          </span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;margin-bottom:8px;">
+          <input bind:value={vaultFilePath} placeholder="Path (.pdf, .png, .jpg, .webp, .tiff, .docx, .xlsx, .md)" style="background:#0d1117;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:8px;font-size:0.82rem;" />
+          <button
+            onclick={handleBrowseVaultFile}
+            disabled={busyVault || pickingVaultFile}
+            title="Select a PDF, scanned image, or Office document to index"
+            style="background:#30363d;color:#e6edf3;border:1px solid #484f58;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:600;font-size:0.82rem;"
+          >
+            {pickingVaultFile ? 'Opening...' : 'Browse PDF/Image...'}
+          </button>
           <button onclick={handleVaultIngest} disabled={busyVault} style="background:#238636;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:600;">
             Index File
           </button>

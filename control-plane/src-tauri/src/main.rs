@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     time::Duration,
 };
 
@@ -23,6 +24,12 @@ struct SupervisorStatusPayload {
     active_firecracker_vms: usize,
     #[serde(default)]
     kvm_assets_ready: bool,
+    #[serde(default)]
+    vision_mmproj_active: Option<bool>,
+    #[serde(default)]
+    mmproj_filename: Option<String>,
+    #[serde(default)]
+    firecracker_jailer_ready: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,12 +47,67 @@ struct NodeDashboardSnapshot {
     active_firecracker_vms: usize,
     kvm_assets_ready: bool,
     netbird_interface_up: bool,
+    vision_mmproj_active: bool,
+    mmproj_filename: Option<String>,
+    firecracker_jailer_ready: bool,
+    ocr_engine_ready: bool,
 }
 
 fn get_run_dir() -> PathBuf {
     let data_dir = std::env::var("HARTSANTICLOUD_DATA_DIR")
         .unwrap_or_else(|_| "/var/lib/hartsanticloud".to_string());
     PathBuf::from(data_dir).join("run")
+}
+
+fn detect_mmproj_projector() -> (bool, Option<String>) {
+    let models_dir = std::env::var("HARTSANTICLOUD_MODELS_DIR")
+        .unwrap_or_else(|_| "/opt/hartsanticloud/models".to_string());
+    let dir = Path::new(&models_dir);
+
+    if let Ok(explicit) = std::env::var("HARTSANTICLOUD_MMPROJ_FILENAME") {
+        let trimmed = explicit.trim();
+        if !trimmed.is_empty() && dir.join(trimmed).is_file() {
+            return (true, Some(trimmed.to_string()));
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let lower = name.to_ascii_lowercase();
+            if lower.contains("mmproj") && lower.ends_with(".gguf") && entry.path().is_file() {
+                return (true, Some(name));
+            }
+        }
+    }
+
+    (false, None)
+}
+
+fn binary_available(name: &str, extra_dirs: &[&str]) -> bool {
+    for dir in extra_dirs {
+        if Path::new(dir).join(name).is_file() {
+            return true;
+        }
+    }
+    if let Ok(path_var) = std::env::var("PATH") {
+        for p in std::env::split_paths(&path_var) {
+            if p.join(name).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn detect_jailer_and_ocr(kvm_available: bool) -> (bool, bool) {
+    let jailer_found = binary_available(
+        "jailer",
+        &["/opt/hartsanticloud/bin", "/usr/local/bin", "/usr/bin"],
+    );
+    let ocr_found = binary_available("tesseract", &["/usr/local/bin", "/usr/bin"])
+        && binary_available("pdftoppm", &["/usr/local/bin", "/usr/bin"]);
+    (kvm_available && jailer_found, ocr_found)
 }
 
 fn load_supervisor_token() -> Result<String, String> {
@@ -83,6 +145,7 @@ fn build_uds_client(timeout: Duration) -> Result<(Client, String), String> {
 async fn get_node_snapshot() -> Result<NodeDashboardSnapshot, String> {
     let netbird_interface_up = Path::new("/sys/class/net/wt0").exists();
     let mut supervisor_uri = format!("unix://{}", get_run_dir().join("supervisor.sock").display());
+    let (local_mmproj_active, local_mmproj_name) = detect_mmproj_projector();
 
     if let (Ok(token), Ok((client, uri))) = (
         load_supervisor_token(),
@@ -96,6 +159,8 @@ async fn get_node_snapshot() -> Result<NodeDashboardSnapshot, String> {
             .await
         {
             if let Ok(remote) = resp.json::<SupervisorStatusPayload>().await {
+                let (jailer_ready, ocr_ready) =
+                    detect_jailer_and_ocr(remote.live_telemetry.kvm_available);
                 return Ok(NodeDashboardSnapshot {
                     supervisor_online: true,
                     supervisor_url: supervisor_uri,
@@ -110,6 +175,12 @@ async fn get_node_snapshot() -> Result<NodeDashboardSnapshot, String> {
                     active_firecracker_vms: remote.active_firecracker_vms,
                     kvm_assets_ready: remote.kvm_assets_ready,
                     netbird_interface_up,
+                    vision_mmproj_active: remote.vision_mmproj_active.unwrap_or(local_mmproj_active),
+                    mmproj_filename: remote.mmproj_filename.or(local_mmproj_name),
+                    firecracker_jailer_ready: remote
+                        .firecracker_jailer_ready
+                        .unwrap_or(jailer_ready),
+                    ocr_engine_ready: ocr_ready,
                 });
             }
         }
@@ -118,6 +189,7 @@ async fn get_node_snapshot() -> Result<NodeDashboardSnapshot, String> {
     let root = Path::new("/");
     let local_budget = compute_budget(root, false).map_err(|e| e.to_string())?;
     let live_telemetry = probe_hardware(root).map_err(|e| e.to_string())?;
+    let (jailer_ready, ocr_ready) = detect_jailer_and_ocr(live_telemetry.kvm_available);
 
     Ok(NodeDashboardSnapshot {
         supervisor_online: false,
@@ -133,11 +205,64 @@ async fn get_node_snapshot() -> Result<NodeDashboardSnapshot, String> {
         active_firecracker_vms: 0,
         kvm_assets_ready: false,
         netbird_interface_up,
+        vision_mmproj_active: local_mmproj_active,
+        mmproj_filename: local_mmproj_name,
+        firecracker_jailer_ready: jailer_ready,
+        ocr_engine_ready: ocr_ready,
     })
 }
 
 #[tauri::command]
-async fn send_local_prompt(prompt: String) -> Result<String, String> {
+async fn pick_vault_file() -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        if binary_available("zenity", &["/usr/bin", "/usr/local/bin"]) {
+            let output = Command::new("zenity")
+                .args([
+                    "--file-selection",
+                    "--title=Select Document or Image for Local Vault Ingestion",
+                    "--file-filter=Supported Vault Files (PDF, Images, Office, Markdown) | *.pdf *.PDF *.png *.PNG *.jpg *.JPG *.jpeg *.JPEG *.webp *.WEBP *.tif *.TIF *.tiff *.TIFF *.bmp *.BMP *.docx *.DOCX *.xlsx *.XLSX *.csv *.CSV *.md *.MD *.txt *.TXT",
+                    "--file-filter=All Files | *",
+                ])
+                .output()
+                .map_err(|e| format!("Failed to launch file picker: {}", e))?;
+
+            if output.status.success() {
+                let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !selected.is_empty() {
+                    return Ok(Some(selected));
+                }
+            }
+            return Ok(None);
+        }
+
+        if binary_available("kdialog", &["/usr/bin", "/usr/local/bin"]) {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/home".to_string());
+            let output = Command::new("kdialog")
+                .args([
+                    "--getopenfilename",
+                    &home,
+                    "*.pdf *.png *.jpg *.jpeg *.webp *.tif *.tiff *.bmp *.docx *.xlsx *.csv *.md *.txt|Supported Vault Files",
+                ])
+                .output()
+                .map_err(|e| format!("Failed to launch kdialog file picker: {}", e))?;
+
+            if output.status.success() {
+                let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !selected.is_empty() {
+                    return Ok(Some(selected));
+                }
+            }
+            return Ok(None);
+        }
+
+        Err("No desktop file dialog helper (zenity or kdialog) found; paste the full file path directly.".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn send_local_prompt(prompt: String, use_vault_rag: Option<bool>) -> Result<String, String> {
     if prompt.trim().is_empty() || prompt.len() > 32_000 {
         return Err("Prompt must be between 1 and 32,000 characters".to_string());
     }
@@ -152,6 +277,7 @@ async fn send_local_prompt(prompt: String) -> Result<String, String> {
             "messages": [{ "role": "user", "content": prompt }],
             "max_tokens": 512,
             "temperature": 0.2,
+            "use_vault_rag": use_vault_rag.unwrap_or(true),
             "allow_cloud_burst": false
         }))
         .send()
@@ -216,7 +342,6 @@ async fn run_sandbox_task(runtime: String, workload_name: String, payload: Strin
         .map_err(|e| e.to_string())
 }
 
-
 #[tauri::command]
 async fn provision_kvm_assets() -> Result<serde_json::Value, String> {
     let token = load_supervisor_token()?;
@@ -234,7 +359,6 @@ async fn provision_kvm_assets() -> Result<serde_json::Value, String> {
         .await
         .map_err(|e| e.to_string())
 }
-
 
 #[tauri::command]
 async fn ingest_vault_item(
@@ -319,6 +443,7 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_node_snapshot,
+            pick_vault_file,
             send_local_prompt,
             execute_sqlite_query,
             run_sandbox_task,
